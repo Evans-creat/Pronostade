@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>PronoStade</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
+  body { font-family: 'Inter', sans-serif; background: #0B3D2E; margin:0; }
+  .font-display { font-family: 'Oswald', sans-serif; }
+  @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { animation: spin 1s linear infinite; display:inline-block; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback } = React;
+
+const SPORTS = [
+  { id: "foot", label: "Football", emoji: "⚽" },
+  { id: "basket", label: "Basketball", emoji: "🏀" },
+  { id: "tennis", label: "Tennis", emoji: "🎾" },
+  { id: "autre", label: "Autres", emoji: "🏆" },
+];
+
+const VIP_THRESHOLD = 78;
+const VIP_CODE = "PRONOSTADE2026";
+
+const SYSTEM_PROMPT = `Tu es un analyste sportif professionnel spécialisé dans les pronostics multi-sports (football, basketball, tennis, etc.). Pour le match fourni, recherche sur le web les informations les plus récentes possibles : forme actuelle des deux équipes/joueurs, blessures ou absences, historique des confrontations directes, classement, et cotes proposées par les bookmakers si disponibles. Sur cette base, donne un seul pronostic clair et réaliste. Réponds UNIQUEMENT avec un objet JSON valide, sans aucun texte avant ou après, sans balises markdown ni commentaires, exactement dans ce format : {"marche":"ex: Vainqueur du match","pronostic":"ex: Victoire de l'équipe A","confiance":75,"cote_estimee":"ex: 1.85","justification":"2 phrases maximum expliquant le pronostic","niveau_risque":"Faible, Moyen ou Élevé"}`;
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// --- Stockage local (remplace window.storage hors de Claude.ai) ---
+function lsGet(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v ? JSON.parse(v) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function lsSet(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.error("Erreur de sauvegarde locale", e);
+  }
+}
+
+function ConfidenceBar({ value }) {
+  const color = value >= VIP_THRESHOLD ? "#D4AF37" : value >= 55 ? "#FF8C32" : "#9CA8B8";
+  return (
+    <div className="w-full h-2 rounded-full bg-black/10 overflow-hidden">
+      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${value}%`, backgroundColor: color }} />
+    </div>
+  );
+}
+
+function PerforatedDivider({ left, right }) {
+  return (
+    <div className="relative flex items-center my-6 select-none">
+      <span className="text-[11px] font-bold tracking-widest text-[#0B3D2E]/70 pr-3 whitespace-nowrap">{left}</span>
+      <div className="flex-1 h-3" style={{
+        backgroundImage: "radial-gradient(circle, transparent 3px, #0B3D2E 3.5px)",
+        backgroundSize: "14px 14px", backgroundPosition: "center", backgroundRepeat: "repeat-x", opacity: 0.25,
+      }} />
+      <span className="text-[11px] font-bold tracking-widest text-[#D4AF37] pl-3 whitespace-nowrap">{right}</span>
+    </div>
+  );
+}
+
+function RiskTag({ level }) {
+  const map = {
+    "Faible": "bg-[#3FA796]/15 text-[#2c7a6f]",
+    "Moyen": "bg-[#FF8C32]/15 text-[#b85e0f]",
+    "Élevé": "bg-[#E1473A]/15 text-[#b8332a]",
+  };
+  return <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-1 rounded-full ${map[level] || "bg-black/10 text-black/60"}`}>Risque {level || "?"}</span>;
+}
+
+function MatchTicket({ match, vipUnlocked, onAnalyze, onOutcome, onUnlockRequest, onSendTelegram, analyzing, sending }) {
+  const sport = SPORTS.find((s) => s.id === match.sport) || SPORTS[3];
+  const pred = match.prediction;
+  const isVip = pred && pred.confiance >= VIP_THRESHOLD;
+  const locked = isVip && !vipUnlocked;
+
+  return (
+    <div className="relative bg-[#F7F4E9] rounded-2xl shadow-[0_4px_0_rgba(11,61,46,0.15)] border border-[#0B3D2E]/10 overflow-hidden">
+      <div className="flex items-center justify-between px-4 pt-3">
+        <div className="flex items-center gap-2 text-xs font-bold text-[#0B3D2E]/60 uppercase tracking-wide">
+          <span>{sport.emoji}</span><span>{match.competition || sport.label}</span>
+        </div>
+        {isVip && <span className="flex items-center gap-1 text-[10px] font-bold text-[#D4AF37] uppercase">🔥 VIP</span>}
+      </div>
+
+      <div className="px-4 pt-2 pb-3">
+        <p className="font-display text-lg font-semibold text-[#10172A] leading-tight">
+          {match.teamA} <span className="text-[#0B3D2E]/40">vs</span> {match.teamB}
+        </p>
+        {match.date && <p className="text-[11px] text-[#10172A]/50 mt-0.5">{match.date}</p>}
+      </div>
+
+      {match.status === "pending" && (
+        <div className="px-4 pb-4">
+          <button onClick={() => onAnalyze(match)} disabled={analyzing}
+            className="w-full flex items-center justify-center gap-2 bg-[#0B3D2E] text-[#F7F4E9] font-bold text-sm py-2.5 rounded-xl hover:bg-[#0e4d3a] transition disabled:opacity-60">
+            {analyzing ? <><span className="spin">⏳</span> Analyse en cours…</> : <>📈 Lancer le pronostic IA</>}
+          </button>
+        </div>
+      )}
+
+      {match.status === "erreur" && (
+        <div className="px-4 pb-4">
+          <p className="text-xs text-[#E1473A] mb-2">{match.errorMsg || "L'analyse a échoué. Vérifie ta clé API dans les réglages."}</p>
+          <button onClick={() => onAnalyze(match)} className="w-full flex items-center justify-center gap-2 border border-[#0B3D2E] text-[#0B3D2E] font-bold text-sm py-2 rounded-xl">🔄 Réessayer</button>
+        </div>
+      )}
+
+      {match.status === "analyse" && pred && (
+        <div className="border-t border-dashed border-[#0B3D2E]/20 px-4 py-3 relative">
+          <div className={locked ? "blur-sm select-none pointer-events-none" : ""}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] uppercase font-bold text-[#0B3D2E]/50">{pred.marche}</span>
+              <RiskTag level={pred.niveau_risque} />
+            </div>
+            <p className="font-bold text-[#10172A] text-base mb-2">{pred.pronostic}</p>
+            <ConfidenceBar value={pred.confiance} />
+            <div className="flex items-center justify-between mt-1 mb-2">
+              <span className="text-[11px] text-[#10172A]/60">Confiance : {pred.confiance}%</span>
+              <span className="text-[11px] font-mono font-bold text-[#10172A]/70">Cote ≈ {pred.cote_estimee}</span>
+            </div>
+            <p className="text-xs text-[#10172A]/70 italic mb-3">{pred.justification}</p>
+
+            <div className="flex gap-2 mb-2">
+              <button onClick={() => onSendTelegram(match)} disabled={sending}
+                className="flex-1 text-xs font-bold py-1.5 rounded-lg bg-[#229ED9]/15 text-[#1786b8] flex items-center justify-center gap-1">
+                {sending ? <span className="spin">⏳</span> : "📤"} Envoyer sur Telegram
+              </button>
+            </div>
+
+            {!match.result && (
+              <div className="flex gap-2">
+                <button onClick={() => onOutcome(match.id, "gagne")} className="flex-1 text-xs font-bold py-1.5 rounded-lg bg-[#3FA796]/15 text-[#2c7a6f]">✅ Gagné</button>
+                <button onClick={() => onOutcome(match.id, "perdu")} className="flex-1 text-xs font-bold py-1.5 rounded-lg bg-[#E1473A]/15 text-[#b8332a]">❌ Perdu</button>
+              </div>
+            )}
+            {match.result && <p className="text-xs font-bold text-center text-[#10172A]/50">Résultat enregistré : {match.result === "gagne" ? "✅ Gagné" : "❌ Perdu"}</p>}
+          </div>
+
+          {locked && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#F7F4E9]/70">
+              <span className="text-xl">🔒</span>
+              <p className="text-xs font-bold text-[#10172A]">Réservé aux membres VIP</p>
+              <button onClick={onUnlockRequest} className="text-xs font-bold px-3 py-1.5 rounded-full bg-[#D4AF37] text-[#10172A]">Débloquer</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PronoStade() {
+  const [matches, setMatches] = useState(() => lsGet("ps_matches", []));
+  const [history, setHistory] = useState(() => lsGet("ps_history", []));
+  const [vipUnlocked, setVipUnlocked] = useState(() => lsGet("ps_vip_unlocked", false));
+  const [filter, setFilter] = useState("tous");
+  const [analyzingId, setAnalyzingId] = useState(null);
+  const [sendingId, setSendingId] = useState(null);
+  const [showUnlock, setShowUnlock] = useState(false);
+  const [unlockInput, setUnlockInput] = useState("");
+  const [unlockError, setUnlockError] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ sport: "foot", teamA: "", teamB: "", competition: "", date: "" });
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [settings, setSettings] = useState(() => ({
+    apiKey: lsGet("ps_api_key", ""),
+    tgToken: lsGet("ps_tg_token", ""),
+    tgChatFree: lsGet("ps_tg_chat_free", ""),
+    tgChatVip: lsGet("ps_tg_chat_vip", ""),
+  }));
+  let pressTimer = null;
+
+  const saveSettings = (next) => {
+    setSettings(next);
+    lsSet("ps_api_key", next.apiKey);
+    lsSet("ps_tg_token", next.tgToken);
+    lsSet("ps_tg_chat_free", next.tgChatFree);
+    lsSet("ps_tg_chat_vip", next.tgChatVip);
+  };
+
+  const addMatch = useCallback(() => {
+    if (!form.teamA.trim() || !form.teamB.trim()) return;
+    const newMatch = { id: uid(), status: "pending", ...form };
+    const next = [newMatch, ...matches];
+    setMatches(next);
+    lsSet("ps_matches", next);
+    setForm({ sport: form.sport, teamA: "", teamB: "", competition: "", date: "" });
+    setShowForm(false);
+  }, [form, matches]);
+
+  const analyzeMatch = useCallback(async (match) => {
+    if (!settings.apiKey) {
+      setMatches((prev) => {
+        const next = prev.map((m) => m.id === match.id ? { ...m, status: "erreur", errorMsg: "Ajoute ta clé API Anthropic dans les réglages (appui long sur le logo)." } : m);
+        lsSet("ps_matches", next);
+        return next;
+      });
+      return;
+    }
+    setAnalyzingId(match.id);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": settings.apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: "user", content: `Sport : ${match.sport}\nCompétition : ${match.competition || "non précisée"}\nMatch : ${match.teamA} vs ${match.teamB}\nDate : ${match.date || "à venir"}` }],
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message || "Erreur API");
+      const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      const clean = jsonMatch ? jsonMatch[0] : text.trim();
+      const parsed = JSON.parse(clean);
+      setMatches((prev) => {
+        const next = prev.map((m) => m.id === match.id ? { ...m, status: "analyse", prediction: parsed } : m);
+        lsSet("ps_matches", next);
+        return next;
+      });
+    } catch (e) {
+      setMatches((prev) => {
+        const next = prev.map((m) => m.id === match.id ? { ...m, status: "erreur", errorMsg: e.message } : m);
+        lsSet("ps_matches", next);
+        return next;
+      });
+    } finally {
+      setAnalyzingId(null);
+    }
+  }, [settings.apiKey]);
+
+  const onOutcome = useCallback((id, result) => {
+    setMatches((prev) => {
+      const target = prev.find((m) => m.id === id);
+      const next = prev.map((m) => m.id === id ? { ...m, result } : m);
+      lsSet("ps_matches", next);
+      if (target) {
+        const h = [{ ...target, result }, ...history].slice(0, 200);
+        setHistory(h);
+        lsSet("ps_history", h);
+      }
+      return next;
+    });
+  }, [history]);
+
+  const sendToTelegram = useCallback(async (match) => {
+    const pred = match.prediction;
+    if (!settings.tgToken) { alert("Configure ton bot Telegram dans les réglages (appui long sur le logo)."); return; }
+    const isVip = pred.confiance >= VIP_THRESHOLD;
+    const chatId = isVip ? settings.tgChatVip : settings.tgChatFree;
+    if (!chatId) { alert(`Ajoute l'ID du canal ${isVip ? "VIP" : "gratuit"} dans les réglages.`); return; }
+    setSendingId(match.id);
+    const text = `🎫 ${match.teamA} vs ${match.teamB}\n🏆 ${match.competition || ""}\n${match.date || ""}\n\n📊 ${pred.marche}\n✅ ${pred.pronostic}\n📈 Confiance : ${pred.confiance}%\n💰 Cote ≈ ${pred.cote_estimee}\n⚠️ Risque : ${pred.niveau_risque}\n\n${pred.justification}\n\n— PronoStade${isVip ? " VIP 🔥" : ""}`;
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${settings.tgToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text }),
+      });
+      const data = await res.json();
+      if (!data.ok) alert("Erreur Telegram : " + (data.description || "inconnue"));
+      else alert("Envoyé sur Telegram ✅");
+    } catch (e) {
+      alert("Erreur réseau : " + e.message);
+    } finally {
+      setSendingId(null);
+    }
+  }, [settings]);
+
+  const handleUnlock = () => {
+    if (unlockInput.trim().toUpperCase() === VIP_CODE) {
+      setVipUnlocked(true);
+      lsSet("ps_vip_unlocked", true);
+      setShowUnlock(false);
+      setUnlockError("");
+      setUnlockInput("");
+    } else {
+      setUnlockError("Code invalide. Demande ton code VIP via Telegram/WhatsApp.");
+    }
+  };
+
+  const startPress = () => {
+    pressTimer = setTimeout(() => {
+      setAdminOpen(true);
+      setVipUnlocked(true);
+      lsSet("ps_vip_unlocked", true);
+    }, 700);
+  };
+  const endPress = () => clearTimeout(pressTimer);
+
+  const wins = history.filter((h) => h.result === "gagne").length;
+  const total = history.length;
+  const winRate = total ? Math.round((wins / total) * 100) : null;
+  const visible = matches.filter((m) => filter === "tous" || m.sport === filter);
+
+  return (
+    <div className="min-h-screen bg-[#0B3D2E] pb-16">
+      <div className="max-w-md mx-auto px-4 pt-6">
+        <div className="flex items-center justify-between mb-1" onMouseDown={startPress} onMouseUp={endPress} onTouchStart={startPress} onTouchEnd={endPress}>
+          <h1 className="font-display text-2xl font-bold text-[#F7F4E9] tracking-tight">PRONO<span className="text-[#D4AF37]">STADE</span></h1>
+          <span className="flex items-center gap-1.5 text-[10px] font-bold text-[#FF8C32] uppercase">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#FF8C32]" style={{ animation: "pulse-dot 1.4s infinite" }} />En direct
+          </span>
+        </div>
+        <p className="text-xs text-[#F7F4E9]/60 mb-4">Pronostics multi-sports — IA + recherche en temps réel</p>
+
+        {winRate !== null && (
+          <div className="flex items-center gap-2 text-[#F7F4E9]/80 text-xs mb-4">
+            🏆 Taux de réussite suivi : <span className="font-bold text-[#F7F4E9]">{winRate}%</span> ({total} pronostics)
+          </div>
+        )}
+
+        {adminOpen && (
+          <div className="bg-[#10172A] border border-[#D4AF37]/40 rounded-xl p-3 mb-4 space-y-2">
+            <p className="text-[10px] text-[#D4AF37] font-bold">RÉGLAGES — visible uniquement sur cet appareil</p>
+            <p className="text-[10px] text-[#F7F4E9]/50">👁 Aperçu VIP activé.</p>
+            <input value={settings.apiKey} onChange={(e) => saveSettings({ ...settings, apiKey: e.target.value })}
+              placeholder="Clé API Anthropic (sk-ant-...)" type="password"
+              className="w-full text-xs bg-[#0B3D2E]/40 text-[#F7F4E9] rounded-lg p-2 placeholder:text-[#F7F4E9]/30" />
+            <input value={settings.tgToken} onChange={(e) => saveSettings({ ...settings, tgToken: e.target.value })}
+              placeholder="Token du bot Telegram" type="password"
+              className="w-full text-xs bg-[#0B3D2E]/40 text-[#F7F4E9] rounded-lg p-2 placeholder:text-[#F7F4E9]/30" />
+            <input value={settings.tgChatFree} onChange={(e) => saveSettings({ ...settings, tgChatFree: e.target.value })}
+              placeholder="ID du canal Telegram gratuit"
+              className="w-full text-xs bg-[#0B3D2E]/40 text-[#F7F4E9] rounded-lg p-2 placeholder:text-[#F7F4E9]/30" />
+            <input value={settings.tgChatVip} onChange={(e) => saveSettings({ ...settings, tgChatVip: e.target.value })}
+              placeholder="ID du canal Telegram VIP"
+              className="w-full text-xs bg-[#0B3D2E]/40 text-[#F7F4E9] rounded-lg p-2 placeholder:text-[#F7F4E9]/30" />
+            <button onClick={() => setAdminOpen(false)} className="w-full bg-[#D4AF37] text-[#10172A] text-xs font-bold py-1.5 rounded-lg">Fermer</button>
+          </div>
+        )}
+
+        <div className="flex gap-2 overflow-x-auto pb-1 mb-2 -mx-1 px-1">
+          {[{ id: "tous", label: "Tous", emoji: "🎯" }, ...SPORTS].map((s) => (
+            <button key={s.id} onClick={() => setFilter(s.id)}
+              className={`flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full whitespace-nowrap transition ${filter === s.id ? "bg-[#F7F4E9] text-[#0B3D2E]" : "bg-[#F7F4E9]/10 text-[#F7F4E9]/70"}`}>
+              {s.emoji} {s.label}
+            </button>
+          ))}
+        </div>
+
+        <PerforatedDivider left="GRATUIT" right="VIP 🔒" />
+
+        <button onClick={() => setShowForm((v) => !v)}
+          className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-[#F7F4E9]/30 text-[#F7F4E9]/80 font-bold text-sm py-3 rounded-xl mb-4">
+          {showForm ? "✕ Fermer" : "➕ Ajouter un match à pronostiquer"}
+        </button>
+
+        {showForm && (
+          <div className="bg-[#F7F4E9] rounded-2xl p-4 mb-4 space-y-2">
+            <div className="flex gap-2">
+              {SPORTS.map((s) => (
+                <button key={s.id} onClick={() => setForm((f) => ({ ...f, sport: s.id }))}
+                  className={`flex-1 text-xs font-bold py-1.5 rounded-lg ${form.sport === s.id ? "bg-[#0B3D2E] text-[#F7F4E9]" : "bg-[#0B3D2E]/10 text-[#0B3D2E]"}`}>{s.emoji}</button>
+              ))}
+            </div>
+            <input placeholder="Équipe / joueur A" value={form.teamA} onChange={(e) => setForm((f) => ({ ...f, teamA: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-lg bg-[#0B3D2E]/5 outline-none" />
+            <input placeholder="Équipe / joueur B" value={form.teamB} onChange={(e) => setForm((f) => ({ ...f, teamB: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-lg bg-[#0B3D2E]/5 outline-none" />
+            <input placeholder="Compétition (optionnel)" value={form.competition} onChange={(e) => setForm((f) => ({ ...f, competition: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-lg bg-[#0B3D2E]/5 outline-none" />
+            <input placeholder="Date (optionnel)" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-lg bg-[#0B3D2E]/5 outline-none" />
+            <button onClick={addMatch} className="w-full bg-[#0B3D2E] text-[#F7F4E9] font-bold text-sm py-2.5 rounded-lg">Ajouter le match</button>
+          </div>
+        )}
+
+        {visible.length === 0 && <p className="text-center text-[#F7F4E9]/50 text-sm py-8">Aucun match pour l'instant. Ajoute-en un pour lancer ton premier pronostic.</p>}
+
+        <div className="space-y-3">
+          {visible.map((m) => (
+            <MatchTicket key={m.id} match={m} vipUnlocked={vipUnlocked}
+              analyzing={analyzingId === m.id} sending={sendingId === m.id}
+              onAnalyze={analyzeMatch} onOutcome={onOutcome}
+              onSendTelegram={sendToTelegram}
+              onUnlockRequest={() => setShowUnlock(true)} />
+          ))}
+        </div>
+
+        <p className="text-[10px] text-[#F7F4E9]/40 text-center mt-8 leading-relaxed">
+          Les paris sportifs comportent des risques financiers. Ces pronostics sont fournis à titre informatif et ne garantissent aucun résultat — joue de façon responsable.
+        </p>
+      </div>
+
+      {showUnlock && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-6 z-50">
+          <div className="bg-[#F7F4E9] rounded-2xl p-5 w-full max-w-sm">
+            <div className="flex items-center justify-between mb-3">
+              <p className="font-display font-bold text-[#10172A]">Débloquer la zone VIP</p>
+              <button onClick={() => setShowUnlock(false)}>✕</button>
+            </div>
+            <p className="text-xs text-[#10172A]/60 mb-3">Entre le code VIP reçu après ton abonnement (Mobile Money / crypto via Telegram ou WhatsApp).</p>
+            <input value={unlockInput} onChange={(e) => setUnlockInput(e.target.value)} placeholder="Code VIP" className="w-full text-sm px-3 py-2 rounded-lg bg-[#0B3D2E]/5 outline-none mb-2" />
+            {unlockError && <p className="text-xs text-[#E1473A] mb-2">{unlockError}</p>}
+            <button onClick={handleUnlock} className="w-full flex items-center justify-center gap-2 bg-[#D4AF37] text-[#10172A] font-bold text-sm py-2.5 rounded-xl">🔓 Valider le code</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<PronoStade />);
+</script>
+</body>
+</html>
